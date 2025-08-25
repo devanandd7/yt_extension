@@ -15,18 +15,74 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  // Abortable fetch with timeout
+  async function fetchWithTimeout(url, ms = 2000, options = {}) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort('timeout'), ms);
+    try {
+      const res = await fetch(url, { ...options, signal: ctrl.signal });
+      return res;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   async function waitFor(selector, timeout = 5000) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
       const el = document.querySelector(selector);
       if (el) return el;
-      await sleep(100);
+      await sleep(50);
     }
     return null;
   }
 
+  // Wait for the first element that matches any of the provided selectors
+  async function waitForAnySelector(selectors, timeout = 1500) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el) return el;
+      }
+      await sleep(50);
+    }
+    return null;
+  }
+
+  // Poll until transcript items appear (fast exit as soon as found)
+  async function waitForTranscriptItems(timeout = 1000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (document.querySelector(SEL.transcriptItem) || document.querySelector(SEL.transcriptItemAlt)) return true;
+      await sleep(50);
+    }
+    return false;
+  }
+
+  // Use precise selectors from ids.txt to open transcript via description section quickly
+  async function openTranscriptViaDescriptionPrecise(maxTimeMs = 3000) {
+    const deadline = Date.now() + maxTimeMs;
+    // 1) Click ...more (#expand)
+    const more = document.querySelector('tp-yt-paper-button#expand');
+    if (more) {
+      realClick(more);
+    }
+    // 2) Wait for the transcript section to appear
+    const section = await waitFor('ytd-video-description-transcript-section-renderer', Math.max(400, deadline - Date.now()));
+    if (!section) return false;
+    // 3) Click Show transcript button inside the section
+    const btn = section.querySelector('ytd-button-renderer.ytd-video-description-transcript-section-renderer button, ytd-button-renderer.ytd-video-description-transcript-section-renderer tp-yt-paper-button');
+    if (btn) {
+      realClick(btn);
+    }
+    // 4) Wait for items
+    const remaining = Math.max(300, deadline - Date.now());
+    return await waitForTranscriptItems(remaining);
+  }
+
   function scrapeTranscript() {
-    let nodes = Array.from(document.querySelectorAll(`${SEL.transcriptItem}.style-scope.ytd-transcript-segment-list-renderer, ${SEL.transcriptItem}`));
+    let nodes = Array.from(document.querySelectorAll(SEL.transcriptItem));
     if (!nodes.length) {
       nodes = Array.from(document.querySelectorAll(SEL.transcriptItemAlt));
     }
@@ -43,56 +99,38 @@
   }
 
   async function tryOpenTranscriptPanel() {
-    // Best-effort attempts. YouTube changes often, so this may fail.
-    // 1) Try clicking a visible "Show transcript" under the description section
-    let clicked = false;
-    const section = document.querySelector('ytd-video-description-transcript-section-renderer');
-    if (section) {
-      const btnIn = section.querySelector('ytd-button-renderer button, ytd-button-renderer tp-yt-paper-button');
-      if (btnIn) {
-        btnIn.click();
-        clicked = true;
-        await sleep(900);
-      }
-    }
+    // Fast exit if already present
+    if (document.querySelector(SEL.transcriptItem) || document.querySelector(SEL.transcriptItemAlt)) return;
 
-    // 2) Click "...more" to expand description, then try again if not clicked
-    if (!clicked) {
-      const more = document.querySelector(SEL.showMoreBtn);
-      if (more) {
-        more.click();
-        await sleep(600);
-        const section2 = document.querySelector('ytd-video-description-transcript-section-renderer');
-        const btnIn2 = section2 && section2.querySelector('ytd-button-renderer button, ytd-button-renderer tp-yt-paper-button');
-        if (btnIn2) {
-          btnIn2.click();
-          clicked = true;
-          await sleep(900);
-        }
-      }
-    }
+    // 1) Fast path via description using precise selectors from ids.txt
+    const fast = await openTranscriptViaDescriptionPrecise(3000);
+    if (fast) return;
 
-    // 3) Some UIs expose transcript via the overflow menu (three dots) -> "Show transcript"
-    // Try to open the menu and click an item containing the word "Transcript".
+    // 3) Use overflow menu (three dots) → "Show transcript"
     try {
-      const menuButtons = Array.from(document.querySelectorAll('ytd-menu-renderer tp-yt-paper-icon-button, ytd-menu-renderer button'));
-      const overflow = menuButtons.find(b => b.getAttribute('aria-label')?.toLowerCase().includes('more') || b.title?.toLowerCase().includes('more')) || menuButtons[0];
+      const overflow = await waitForAnySelector([
+        'ytd-menu-renderer tp-yt-paper-icon-button',
+        'ytd-menu-renderer button'
+      ], 1200);
       if (overflow) {
-        overflow.click();
-        await sleep(500);
-        const items = Array.from(document.querySelectorAll('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-compact-link-renderer'));
-        const transItem = items.find(i => i.textContent.toLowerCase().includes('transcript'));
+        realClick(overflow);
+        const transItem = await (async () => {
+          const listSel = ['ytd-menu-service-item-renderer', 'tp-yt-paper-item', 'ytd-compact-link-renderer'];
+          const start = Date.now();
+          while (Date.now() - start < 2000) {
+            const items = Array.from(document.querySelectorAll(listSel.join(', ')));
+            const found = items.find(i => i.textContent.toLowerCase().includes('transcript'));
+            if (found) return found;
+            await sleep(50);
+          }
+          return null;
+        })();
         if (transItem) {
-          transItem.click();
-          await sleep(1000);
+          realClick(transItem);
+          await waitForTranscriptItems(2000);
         }
       }
-    } catch (e) {
-      // ignore
-    }
-
-    // 3) Wait for transcript items to appear a bit
-    await sleep(800);
+    } catch {}
   }
 
   // ====== Timedtext API fallback ======
@@ -101,10 +139,10 @@
     return u.searchParams.get('v');
   }
 
-  async function fetchTimedtextTracks(videoId) {
+  async function fetchTimedtextTracks(videoId, timeoutMs = 2000) {
     // Returns available tracks list
     const url = `https://www.youtube.com/api/timedtext?type=list&v=${encodeURIComponent(videoId)}`;
-    const res = await fetch(url, { credentials: 'omit' });
+    const res = await fetchWithTimeout(url, timeoutMs, { credentials: 'omit' });
     if (!res.ok) return [];
     const xml = await res.text();
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
@@ -117,9 +155,9 @@
     }));
   }
 
-  async function fetchTimedtextTranscript(videoId, lang) {
+  async function fetchTimedtextTranscript(videoId, lang, timeoutMs = 2000) {
     const url = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&lang=${encodeURIComponent(lang)}`;
-    const res = await fetch(url, { credentials: 'omit' });
+    const res = await fetchWithTimeout(url, timeoutMs, { credentials: 'omit' });
     if (!res.ok) return [];
     const xml = await res.text();
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
@@ -143,10 +181,10 @@
     });
   }
 
-  async function fallbackTranscript(preferredLang) {
+  async function fallbackTranscript(preferredLang, timeouts = { list: 1500, fetch: 1500 }) {
     const videoId = getVideoIdFromUrl();
     if (!videoId) return { ok: false, reason: 'Cannot determine video id.' };
-    const tracks = await fetchTimedtextTracks(videoId);
+    const tracks = await fetchTimedtextTracks(videoId, timeouts.list ?? 1500);
     if (!tracks.length) return { ok: false, reason: 'No transcript tracks available for this video.' };
 
     // Choose language
@@ -159,12 +197,43 @@
       .filter(lc => /^(en|en-\w+)/i.test(lc));
     langsByPref.push(...englishish, tracks[0].lang_code);
 
-    for (const lang of langsByPref) {
-      if (!lang) continue;
-      const data = await fetchTimedtextTranscript(videoId, lang);
-      if (data && data.length) return { ok: true, data, lang, tracks };
+    // Try top 3 candidates in parallel for speed
+    const uniq = Array.from(new Set(langsByPref.filter(Boolean)));
+    const top = uniq.slice(0, 3);
+    if (!top.length) return { ok: false, reason: 'No candidate languages.' };
+    const promises = top.map(l => (async () => {
+      const data = await fetchTimedtextTranscript(videoId, l, timeouts.fetch ?? 1500);
+      if (data && data.length) return { ok: true, data, lang: l, tracks };
+      throw new Error('empty');
+    })());
+    try {
+      const first = await Promise.any(promises);
+      return first;
+    } catch {
+      // Fallback sequential on remaining
+      for (const l of uniq.slice(3)) {
+        try {
+          const data = await fetchTimedtextTranscript(videoId, l, timeouts.fetch ?? 1500);
+          if (data && data.length) return { ok: true, data, lang: l, tracks };
+        } catch {}
+      }
+      return { ok: false, reason: 'Timedtext returned no items for available tracks.' };
     }
-    return { ok: false, reason: 'Timedtext returned no items for available tracks.' };
+  }
+
+  // Strict fast DOM attempt (~<=1.2s): check existing items, then precise description path quick open
+  async function getTranscriptFastFlow() {
+    if (!location.pathname.startsWith('/watch')) {
+      throw new Error('not-watch');
+    }
+    let data = scrapeTranscript();
+    if (data.length) return { ok: true, data };
+    const opened = await openTranscriptViaDescriptionPrecise(1200);
+    if (opened) {
+      data = scrapeTranscript();
+      if (data.length) return { ok: true, data };
+    }
+    throw new Error('dom-fast-empty');
   }
 
   async function getTranscriptFlow() {
@@ -189,26 +258,29 @@
   }
 
   function getVideoRect() {
-    // Crop strictly from the HTML5 video element as requested
     const el = document.querySelector(SEL.videoEl);
     if (!el) return null;
     const r = el.getBoundingClientRect();
     return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
   }
 
-  function getVideoEl() {
-    return document.querySelector(SEL.videoEl);
+  function realClick(el) {
+    try {
+      const opts = { bubbles: true, cancelable: true, composed: true, view: window, detail: 1 };
+      el.dispatchEvent(new PointerEvent('pointerdown', opts));
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new PointerEvent('pointerup', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+    } catch {
+      try { el.click(); } catch {}
+    }
   }
 
-  function getVideoTime() {
-    const v = getVideoEl();
-    return v ? v.currentTime : NaN;
-  }
-
-  function parseTimestampToSeconds(str) {
-    if (!str) return NaN;
-    const parts = str.trim().split(':').map(x => parseInt(x, 10));
-    if (parts.some(isNaN)) return NaN;
+  function parseTimeToSeconds(tstr) {
+    if (!tstr) return null;
+    const parts = tstr.trim().split(':').map(s => parseInt(s, 10));
+    if (parts.some(n => Number.isNaN(n))) return null;
     let s = 0;
     if (parts.length === 3) s = parts[0] * 3600 + parts[1] * 60 + parts[2];
     else if (parts.length === 2) s = parts[0] * 60 + parts[1];
@@ -216,41 +288,58 @@
     return s;
   }
 
-  function smartClick(el) {
-    if (!el) return;
-    const opts = { bubbles: true, cancelable: true, composed: true, view: window };
-    el.dispatchEvent(new MouseEvent('pointerdown', opts));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new MouseEvent('pointerup', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    el.dispatchEvent(new MouseEvent('click', opts));
+  function waitForSeek(video, targetSeconds, prevTime, timeout = 1500) {
+    return new Promise(resolve => {
+      let done = false;
+      const clear = () => {
+        if (done) return;
+        done = true;
+        video.removeEventListener('seeked', onSeeked);
+        video.removeEventListener('timeupdate', onTimeupdate);
+        video.removeEventListener('seeking', onSeeking);
+      };
+      const onSeeked = () => { clear(); resolve(true); };
+      const onSeeking = () => { /* seeking started */ };
+      const onTimeupdate = () => {
+        if (Math.abs(video.currentTime - prevTime) > 0.25) { clear(); resolve(true); }
+      };
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.addEventListener('seeking', onSeeking);
+      video.addEventListener('timeupdate', onTimeupdate);
+      setTimeout(() => { clear(); resolve(false); }, timeout);
+    });
   }
 
   async function clickTranscriptItem(index) {
-    const list = Array.from(document.querySelectorAll(`${SEL.transcriptItem}.style-scope.ytd-transcript-segment-list-renderer, ${SEL.transcriptItem}`));
+    // Prefer exact class per ids.txt: ytd-transcript-segment-renderer.style-scope.ytd-transcript-segment-list-renderer
+    let list = Array.from(document.querySelectorAll('ytd-transcript-segment-renderer.style-scope.ytd-transcript-segment-list-renderer'));
+    if (!list.length) list = Array.from(document.querySelectorAll(SEL.transcriptItem));
     const target = list[index];
     if (!target) return { ok: false, reason: 'Transcript item not found for index ' + index };
     try {
       target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } catch {}
-    // Prefer clicking timestamp or text inside the item; then fallback to the item itself.
-    const clickable = target.querySelector('.segment-timestamp, .segment-text, a, button') || target;
-    const before = getVideoTime();
-    smartClick(clickable);
-    await sleep(900);
-    let after = getVideoTime();
-    // Fallback: if time didn't move, parse the timestamp and set currentTime
-    if (isFinite(before) && isFinite(after) && Math.abs(after - before) < 0.2) {
-      const tEl = target.querySelector(SEL.transcriptTime);
-      const tStr = tEl ? tEl.textContent.trim() : '';
-      const secs = parseTimestampToSeconds(tStr);
-      const v = getVideoEl();
-      if (v && isFinite(secs)) {
-        v.currentTime = secs;
-        after = v.currentTime;
+    // Simulate a real click on the item (or timestamp inside) to jump
+    const tsEl = target.querySelector(SEL.transcriptTime) || target;
+    const vid = document.querySelector(SEL.videoEl);
+    const prevTime = vid ? vid.currentTime : 0;
+    const tsText = target.querySelector(SEL.transcriptTime)?.textContent?.trim() || '';
+    const tsSecs = parseTimeToSeconds(tsText);
+
+    realClick(tsEl);
+    // Wait for seek; if not, try setting currentTime directly
+    if (vid) {
+      const moved = await waitForSeek(vid, tsSecs, prevTime, 2000);
+      if (!moved && tsSecs != null) {
+        try { vid.currentTime = tsSecs; } catch {}
+        await waitForSeek(vid, tsSecs, prevTime, 800);
       }
+    } else {
+      await sleep(500);
     }
-    await sleep(200);
+
+    // Small delay for the new frame to render fully
+    await sleep(250);
     const rect = getVideoRect();
     const t = target.querySelector(SEL.transcriptTime);
     const x = target.querySelector(SEL.transcriptText);
@@ -269,17 +358,27 @@
     (async () => {
       if (msg && msg.type === 'GET_TRANSCRIPT') {
         try {
-          // Try DOM first
-          const domRes = await getTranscriptFlow();
-          if (domRes.ok && domRes.data?.length) {
-            sendResponse(domRes);
-            return;
-          }
-          // Fallback to timedtext
-          const fb = await fallbackTranscript(msg.lang);
-          sendResponse(fb);
+          const domPromise = (async () => {
+            const res = await getTranscriptFastFlow();
+            if (res.ok && res.data?.length) return res;
+            throw new Error('dom-empty');
+          })();
+          const timedtextPromise = (async () => {
+            const fb = await fallbackTranscript(msg.lang, { list: 1500, fetch: 1500 });
+            if (fb.ok && fb.data?.length) return fb;
+            throw new Error('timedtext-empty');
+          })();
+          // Return whichever finishes first with data
+          const fast = await Promise.any([domPromise, timedtextPromise]);
+          sendResponse(fast);
         } catch (e) {
-          sendResponse({ ok: false, reason: 'Unexpected error: ' + (e && e.message ? e.message : String(e)) });
+          // If race rejected, try one last quick timedtext attempt
+          try {
+            const fb2 = await fallbackTranscript(msg.lang, { list: 1500, fetch: 1500 });
+            sendResponse(fb2);
+          } catch (e2) {
+            sendResponse({ ok: false, reason: 'Unexpected error: ' + (e2 && e2.message ? e2.message : String(e2)) });
+          }
         }
       } else if (msg && msg.type === 'OPEN_TRANSCRIPT_PANEL') {
         try {
@@ -313,6 +412,14 @@
           if (!data.length) {
             await tryOpenTranscriptPanel();
             data = scrapeTranscript();
+          }
+          if (!data.length) {
+            // Fallback to timedtext if DOM still empty (faster for some videos/locales)
+            const videoId = getVideoIdFromUrl();
+            if (videoId) {
+              const fb = await fallbackTranscript();
+              if (fb.ok) { sendResponse(fb); return; }
+            }
           }
           sendResponse({ ok: true, data });
         } catch (e) {

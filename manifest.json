@@ -10,8 +10,7 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "tabs",
-    "downloads"
+    "tabs"
   ],
   "host_permissions": [
     "https://www.youtube.com/*"
