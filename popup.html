@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YT Transcript</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Transcript</h1>
+      <div class="actions">
+        <button id="refreshBtn" class="icon" title="Fetch transcript">↻</button>
+        <button id="shotBtn" class="icon" title="Take screenshots for each transcript">📸</button>
+        <button id="copyBtn" class="icon" title="Copy all to clipboard">📋</button>
+        <button id="downloadBtn" class="icon" title="Download PDF">⬇️</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search in transcript..." />
+      <select id="lang"></select>
+      <span id="count" class="count">0</span>
+    </div>
+
+    <div id="status" class="status">Loading...</div>
+
+    <ol id="list" class="list"></ol>
+
+    <section>
+      <h2 class="subheading">Preview Cards</h2>
+      <div id="previews" class="previews"></div>
+    </section>
+
+    <template id="row">
+      <li class="row">
+        <span class="time"></span>
+        <span class="text"></span>
+      </li>
+    </template>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

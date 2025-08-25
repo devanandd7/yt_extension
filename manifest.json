@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "YT Transcript Grabber",
+  "version": "1.0.0",
+  "description": "Scrape and show YouTube video transcripts in the extension popup.",
+  "action": {
+    "default_title": "Transcript",
+    "default_popup": "popup.html"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

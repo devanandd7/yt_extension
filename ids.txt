@@ -1,0 +1,13 @@
+...more = <tp-yt-paper-button id="expand"
+Show Transcript = <ytd-button-renderer class="style-scope ytd-video-description-transcript-section-renderer"
+transcript box = <ytd-transcript-segment-renderer class="style-scope ytd-transcript-segment-list-renderer active"
+
+transcript list = <ytd-transcript-segment-renderer class="style-scope ytd-transcript-segment-list-renderer"
+
+transcript time (here show the time of transcript) = <div class="segment-timestamp style-scope ytd-transcript-segment-renderer"
+
+transcript text (here show the text of transcript) = <yt-formatted-string class="segment-text style-scope ytd-transcript-segment-renderer"
+
+youtube video = <video class="video-stream html5-main-video"
+
+video content = div class="ytp-iv-video-content"
